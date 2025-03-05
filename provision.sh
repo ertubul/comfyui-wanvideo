@@ -3,22 +3,16 @@
 # Bu script, ComfyUI ve WanVideo modelleri için container hazırlama işlemlerini yapar
 # Hata tespiti için verbose mod
 set -e  # Hata durumunda script'in durmasını sağlar
+set -x  # Her komutu ekrana yazdırır (debug için)
 
-# WanVideo I2V workflowi için özelleştirilmiş
+# Default workflow
 DEFAULT_WORKFLOW="https://raw.githubusercontent.com/ertubul/comfyui-wanvideo/refs/heads/main/wanvideo-ertubul-720p.json"
 
-# ComfyUI sürümü - Wan modelleriyle uyumlu sürüm
-COMFYUI_COMMIT="b6af2b24ecf267a678fe9144581481de24b37013"  # ComfyUI WanVideo uyumlu sürüm
-
-# WanVideo modelleri için gereken node'lar
+# Gerekli ComfyUI node'ları (WanVideo olmadan başlayacağız)
 NODES=(
     # Temel komponentler
     "https://github.com/ltdrdata/ComfyUI-Manager"
     "https://github.com/cubiq/ComfyUI_essentials"
-    
-    # WanVideo desteği için gerekli node'lar
-    "https://github.com/kijai/ComfyUI-WanVideoWrapper"
-    "https://github.com/kijai/ComfyUI-KJNodes"
     
     # Video işleme node'ları
     "https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite"
@@ -32,7 +26,13 @@ NODES=(
     "https://github.com/WASasquatch/was-node-suite-comfyui"
 )
 
-# WanVideo modelleri - diffusion_models dizinine
+# En son, başka node'lar yüklendikten sonra eklemeyi deneyeceğiz
+WAN_NODES=(
+    "https://github.com/kijai/ComfyUI-WanVideoWrapper"
+    "https://github.com/kijai/ComfyUI-KJNodes"
+)
+
+# Model dosyaları
 DIFFUSION_MODELS=(
     "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1-T2V-14B_fp8_e4m3fn.safetensors"
     "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors"
@@ -43,6 +43,7 @@ DIFFUSION_MODELS=(
 TEXTENCODERS_MODELS=(
     "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/open-clip-xlm-roberta-large-vit-huge-14_fp16.safetensors"
     "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/umt5-xxl-enc-bf16.safetensors"
+    "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 )
 
 # WanVideo VAE
@@ -65,62 +66,76 @@ function provisioning_start() {
     source /opt/ai-dock/etc/environment.sh
     source /opt/ai-dock/bin/venv-set.sh comfyui
 
-    # ComfyUI'yi spesifik versiyona ayarlama
-    echo "ComfyUI'yi WanVideo için uyumlu sürüme ayarlama..."
-    cd /opt/ComfyUI
-    git fetch
-    git checkout $COMFYUI_COMMIT
-    cd /
-
-    # Provisioning başlangıç mesajı
+    # Başlangıç mesajı
     provisioning_print_header
     
-    # Düzgün çalışıp çalışmadığını kontrol etmek için HF_TOKEN'ı görüntüleme
-    # Gerçek token'ı gizliyoruz ama geçerli bir token olup olmadığını kontrol ediyoruz
+    # HF Token kontrolü
     if [[ -n "$HF_TOKEN" ]]; then
-        echo "HF_TOKEN mevcut: ${HF_TOKEN:0:3}...${HF_TOKEN: -3}"
+        # Token var ama placeholder ya da köşeli parantez içeriyorsa düzelt
+        if [[ $HF_TOKEN == *"{"* || $HF_TOKEN == *"}"* ]]; then
+            echo "UYARI: HF_TOKEN içinde { } karakterleri bulundu. Temizleniyor..."
+            # Placeholder parantezlerini temizle
+            export HF_TOKEN=$(echo $HF_TOKEN | sed 's/[{}]//g')
+            echo "HF_TOKEN düzeltildi: ${HF_TOKEN:0:3}...${HF_TOKEN: -3}"
+        else
+            echo "HF_TOKEN mevcut: ${HF_TOKEN:0:3}...${HF_TOKEN: -3}"
+        fi
+        
+        # Token geçerli mi test et
         provisioning_test_hf_token
     else
         echo "UYARI: HF_TOKEN belirlenmemiş. Hugging Face model indirmeleri başarısız olabilir."
     fi
     
-    # Node'ları indirme
-    provisioning_get_nodes
-    
-    # Modelleri indirme ve izinleri ayarlama
-    echo "Model dizinlerini oluşturma..."
+    # Model dizinleri ve izinleri
+    echo "Model dizinlerini oluşturma ve izin verme..."
     mkdir -p "${WORKSPACE}/ComfyUI/models/diffusion_models"
     mkdir -p "${WORKSPACE}/ComfyUI/models/clip_vision"
     mkdir -p "${WORKSPACE}/ComfyUI/models/text_encoders"
     mkdir -p "${WORKSPACE}/ComfyUI/models/vae"
     mkdir -p "${WORKSPACE}/ComfyUI/models/frame_interpolation"
     
-    # Dizinlere yazma izni verme
+    # Tam izinler ver
     chmod -R 777 "${WORKSPACE}/ComfyUI/models"
     
-    # Modelleri indirme
+    # Temel node'ları indir
+    provisioning_get_nodes "${NODES[@]}"
+    
+    # Model dosyalarını indir
     echo "Diffusion modellerini indirme..."
-    provisioning_get_models "${WORKSPACE}/ComfyUI/models/diffusion_models" "${DIFFUSION_MODELS[@]}"
+    for model in "${DIFFUSION_MODELS[@]}"; do
+        provisioning_download "$model" "${WORKSPACE}/ComfyUI/models/diffusion_models"
+    done
     
     echo "Text encoder modellerini indirme..."
-    provisioning_get_models "${WORKSPACE}/ComfyUI/models/text_encoders" "${TEXTENCODERS_MODELS[@]}"
+    for model in "${TEXTENCODERS_MODELS[@]}"; do
+        provisioning_download "$model" "${WORKSPACE}/ComfyUI/models/text_encoders"
+    done
     
     echo "VAE modellerini indirme..."
-    provisioning_get_models "${WORKSPACE}/ComfyUI/models/vae" "${VAE_MODELS[@]}"
+    for model in "${VAE_MODELS[@]}"; do
+        provisioning_download "$model" "${WORKSPACE}/ComfyUI/models/vae"
+    done
     
     echo "CLIP Vision modellerini indirme..."
-    provisioning_get_models "${WORKSPACE}/ComfyUI/models/clip_vision" "${CLIPVISION_MODELS[@]}"
+    for model in "${CLIPVISION_MODELS[@]}"; do
+        provisioning_download "$model" "${WORKSPACE}/ComfyUI/models/clip_vision"
+    done
 
-    # FILM modelini indirme
+    # FILM modelini indir
     echo "FILM Frame Interpolation modelini indirme..."
     provisioning_download "https://huggingface.co/nguu/film-pytorch/resolve/887b2c42bebcb323baf6c3b6d59304135699b575/film_net_fp32.pt" "${WORKSPACE}/ComfyUI/models/frame_interpolation"
     
-    # Default workflow ayarlama
+    # WanVideo node'larını yüklemeyi dene
+    echo "WanVideo node'larını yüklemeyi deneme..."
+    provisioning_get_nodes "${WAN_NODES[@]}"
+    
+    # Default workflow ayarla
     if [[ -n "$DEFAULT_WORKFLOW" ]]; then
         provisioning_get_default_workflow
     fi
     
-    # İndirilen modelleri kontrol etme
+    # İndirilen modelleri kontrol et
     echo "İndirilen modelleri kontrol ediliyor..."
     provisioning_verify_downloads
     
@@ -136,33 +151,34 @@ function provisioning_test_hf_token() {
         -H "Content-Type: application/json")
     
     if [ "$response" -eq 200 ]; then
-        echo "HF_TOKEN geçerli. Model indirme işlemi çalışacak."
+        echo "✅ HF_TOKEN geçerli. Model indirme işlemi çalışacak."
     else
-        echo "UYARI: HF_TOKEN geçerli değil! Token düzeltilmeli ({{}} karakterleri olmamalı)."
+        echo "⚠️ UYARI: HF_TOKEN geçerli değil! (HTTP cevap kodu: $response)"
+        echo "Token olmadan indirmeyi deneyeceğiz, ama hız sınırlamasına takılabilirsiniz."
     fi
 }
 
 function provisioning_get_nodes() {
     echo "ComfyUI node'larını indirme..."
-    for repo in "${NODES[@]}"; do
+    for repo in "$@"; do
         dir="${repo##*/}"
         path="/opt/ComfyUI/custom_nodes/${dir}"
         requirements="${path}/requirements.txt"
         
         if [[ -d $path ]]; then
-            echo "Node güncelleniyor: ${repo}"
+            echo "📦 Node güncelleniyor: ${repo}"
             ( cd "$path" && git pull )
         else
-            echo "Node indiriliyor: ${repo}"
-            git clone "${repo}" "${path}" --recursive
+            echo "📥 Node indiriliyor: ${repo}"
+            git clone --depth 1 "${repo}" "${path}"
         fi
         
         if [[ -e $requirements ]]; then
-            echo "Gereksinimler yükleniyor: ${requirements}"
+            echo "🧰 Gereksinimler yükleniyor: ${requirements}"
             if [[ -z $MAMBA_BASE ]]; then
-                "$COMFYUI_VENV_PIP" install -r "$requirements"
+                "$COMFYUI_VENV_PIP" install --no-cache-dir -r "$requirements"
             else
-                micromamba run -n comfyui pip install -r "$requirements"
+                micromamba run -n comfyui pip install --no-cache-dir -r "$requirements"
             fi
         fi
     done
@@ -173,9 +189,9 @@ function provisioning_get_default_workflow() {
     workflow_json=$(curl -s "$DEFAULT_WORKFLOW")
     if [[ -n $workflow_json ]]; then
         echo "export const defaultGraph = $workflow_json;" > /opt/ComfyUI/web/scripts/defaultGraph.js
-        echo "Varsayılan workflow başarıyla ayarlandı."
+        echo "✅ Varsayılan workflow başarıyla ayarlandı."
     else
-        echo "HATA: Varsayılan workflow indirilemedi!"
+        echo "❌ HATA: Varsayılan workflow indirilemedi!"
     fi
 }
 
@@ -184,63 +200,68 @@ function provisioning_download() {
     output_dir="$2"
     filename=$(basename "$url" | sed 's/\?.*//')  # URL parametrelerini kaldır
     
-    echo "İndiriliyor: ${url} -> ${output_dir}/${filename}"
+    echo "📥 İndiriliyor: ${url} -> ${output_dir}/${filename}"
     
-    # HF_TOKEN varsa ve URL huggingface.co'dan ise kullan
-    if [[ -n "$HF_TOKEN" && "$url" == *"huggingface.co"* ]]; then
-        echo "Hugging Face token kullanılıyor..."
-        wget --header="Authorization: Bearer $HF_TOKEN" \
-             --content-disposition \
-             --show-progress \
-             --continue \
-             -P "$output_dir" "$url"
-    else
-        wget --content-disposition \
-             --show-progress \
-             --continue \
-             -P "$output_dir" "$url"
-    fi
+    # Dizini oluştur ve izinlerini ayarla
+    mkdir -p "$output_dir"
+    chmod 777 "$output_dir"
     
-    # İndirme başarısını kontrol et
-    if [ $? -ne 0 ]; then
-        echo "HATA: ${url} indirilemedi!"
-        return 1
-    else
+    # İndirme denemeleri - 3 deneme yap
+    max_retries=3
+    retry_count=0
+    success=false
+    
+    while [ $retry_count -lt $max_retries ] && [ "$success" != "true" ]; do
+        # HF_TOKEN varsa ve URL huggingface.co'dan ise kullan
+        if [[ -n "$HF_TOKEN" && "$url" == *"huggingface.co"* ]]; then
+            echo "🔑 Hugging Face token kullanılıyor (deneme $((retry_count+1))/$max_retries)..."
+            wget --header="Authorization: Bearer $HF_TOKEN" \
+                 --content-disposition \
+                 --show-progress \
+                 --continue \
+                 -P "$output_dir" "$url" && success=true
+        else
+            wget --content-disposition \
+                 --show-progress \
+                 --continue \
+                 -P "$output_dir" "$url" && success=true
+        fi
+        
+        # İndirme başarılı değilse bekle ve yeniden dene
+        if [ "$success" != "true" ]; then
+            retry_count=$((retry_count+1))
+            if [ $retry_count -lt $max_retries ]; then
+                echo "⚠️ İndirme başarısız oldu. Yeniden deneniyor... ($retry_count/$max_retries)"
+                sleep 5  # Yeniden denemeden önce biraz bekle
+            fi
+        fi
+    done
+    
+    # İndirme sonucunu kontrol et
+    if [ "$success" == "true" ]; then
         # İndirilen dosyayı doğrula
         find "$output_dir" -type f -name "$filename" -o -name "$(basename "$url" | cut -d? -f1)" | while read file; do
-            echo "Başarıyla indirildi: $file ($(du -h "$file" | cut -f1))"
+            file_size=$(du -h "$file" | cut -f1)
+            echo "✅ Başarıyla indirildi: $file ($file_size)"
             # Dosyaya herkesin erişebilmesi için izin ver
             chmod 666 "$file"
         done
+        return 0
+    else
+        echo "❌ HATA: $url dosyası $max_retries denemeye rağmen indirilemedi!"
+        return 1
     fi
 }
 
-function provisioning_get_models() {
-    if [[ -z $2 ]]; then return 1; fi
-    
-    dir="$1"
-    mkdir -p "$dir"
-    chmod 777 "$dir"
-    
-    shift
-    models=("$@")
-    
-    echo "${#models[@]} model ${dir} konumuna indiriliyor..."
-    
-    for url in "${models[@]}"; do
-        provisioning_download "$url" "$dir"
-    done
-}
-
 function provisioning_verify_downloads() {
-    echo "İndirilen dosyaları doğrulama..."
+    echo "🔍 İndirilen dosyaları doğrulama..."
     
     # Model dizinlerini listele ve dosya sayısını göster
     for dir in "${WORKSPACE}/ComfyUI/models"/*; do
         if [ -d "$dir" ]; then
             file_count=$(find "$dir" -type f | wc -l)
             dir_size=$(du -sh "$dir" | cut -f1)
-            echo "Dizin: $dir - $file_count dosya ($dir_size)"
+            echo "📁 Dizin: $dir - $file_count dosya ($dir_size)"
             
             # Dosya listesini göster
             if [ "$file_count" -gt 0 ]; then
@@ -249,10 +270,20 @@ function provisioning_verify_downloads() {
                     echo "  - $(basename "$file") ($file_size)"
                 done
             else
-                echo "  UYARI: Bu dizinde dosya bulunamadı!"
+                echo "  ⚠️ UYARI: Bu dizinde dosya bulunamadı!"
             fi
         fi
     done
+    
+    # İndirme şeması oluştur
+    echo "📊 İndirme özeti:"
+    echo "-----------------------"
+    echo "✅ Diffusion modelleri: $(find "${WORKSPACE}/ComfyUI/models/diffusion_models" -type f | wc -l) dosya"
+    echo "✅ Text encoders: $(find "${WORKSPACE}/ComfyUI/models/text_encoders" -type f | wc -l) dosya"
+    echo "✅ VAE modelleri: $(find "${WORKSPACE}/ComfyUI/models/vae" -type f | wc -l) dosya"
+    echo "✅ CLIP Vision: $(find "${WORKSPACE}/ComfyUI/models/clip_vision" -type f | wc -l) dosya"
+    echo "✅ Frame Interpolation: $(find "${WORKSPACE}/ComfyUI/models/frame_interpolation" -type f | wc -l) dosya"
+    echo "-----------------------"
 }
 
 function provisioning_print_header() {
@@ -260,7 +291,7 @@ function provisioning_print_header() {
 }
 
 function provisioning_print_end() {
-    printf "\nKurulum tamamlandı: ComfyUI başlatılıyor...\n\n"
+    printf "\n##############################################\n#                                            #\n#          Kurulum tamamlandı!               #\n#                                            #\n#    ComfyUI arayüzü başlatılıyor...        #\n#                                            #\n##############################################\n\n"
 }
 
 # Ana fonksiyonu çalıştır
