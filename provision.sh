@@ -8,6 +8,9 @@ set -x  # Her komutu ekrana yazdırır (debug için)
 # Default workflow
 DEFAULT_WORKFLOW="https://raw.githubusercontent.com/ertubul/comfyui-wanvideo/refs/heads/main/wanvideo-ertubul-720p.json"
 
+# WanWrapper script'i - BU BÖLÜMÜ GÜNCELLEYIN
+WAN_WRAPPER_SCRIPT="https://raw.githubusercontent.com/ertubul/comfyui-wanvideo/refs/heads/main/install_wan_wrapper.sh"
+
 # Gerekli ComfyUI node'ları (WanVideo olmadan başlayacağız)
 NODES=(
     # Temel komponentler
@@ -24,12 +27,6 @@ NODES=(
     "https://github.com/rgthree/rgthree-comfy"
     "https://github.com/pythongosssss/ComfyUI-Custom-Scripts"
     "https://github.com/WASasquatch/was-node-suite-comfyui"
-)
-
-# En son, başka node'lar yüklendikten sonra eklemeyi deneyeceğiz
-WAN_NODES=(
-    "https://github.com/kijai/ComfyUI-WanVideoWrapper"
-    "https://github.com/kijai/ComfyUI-KJNodes"
 )
 
 # Model dosyaları
@@ -68,6 +65,18 @@ function provisioning_start() {
 
     # Başlangıç mesajı
     provisioning_print_header
+    
+    # ComfyUI'yi doğru branch'e ayarlama
+    echo "ComfyUI branch kontrolü yapılıyor..."
+    if [[ "$COMFYUI_BRANCH" != "wan-model-release" ]]; then
+        echo "⚠️ ComfyUI branch 'wan-model-release' değil. Değiştirmeyi deneyeceğiz..."
+        cd "$WORKSPACE/ComfyUI"
+        git fetch --all
+        git checkout wan-model-release || echo "❌ Branch değiştirilemedi. Mevcutla devam ediliyor."
+        cd /
+    else
+        echo "✅ ComfyUI doğru branch'de: wan-model-release"
+    fi
     
     # HF Token kontrolü
     if [[ -n "$HF_TOKEN" ]]; then
@@ -126,14 +135,13 @@ function provisioning_start() {
     echo "FILM Frame Interpolation modelini indirme..."
     provisioning_download "https://huggingface.co/nguu/film-pytorch/resolve/887b2c42bebcb323baf6c3b6d59304135699b575/film_net_fp32.pt" "${WORKSPACE}/ComfyUI/models/frame_interpolation"
     
-    # WanVideo node'larını yüklemeyi dene
-    echo "WanVideo node'larını yüklemeyi deneme..."
-    provisioning_get_nodes "${WAN_NODES[@]}"
-    
     # Default workflow ayarla
     if [[ -n "$DEFAULT_WORKFLOW" ]]; then
         provisioning_get_default_workflow
     fi
+    
+    # WanVideo wrapper kurulum script'ini çalıştır
+    run_wan_wrapper_script
     
     # İndirilen modelleri kontrol et
     echo "İndirilen modelleri kontrol ediliyor..."
@@ -141,6 +149,35 @@ function provisioning_start() {
     
     # Tamamlandı mesajı
     provisioning_print_end
+}
+
+function run_wan_wrapper_script() {
+    echo "🔄 WanVideo Wrapper kurulum script'i indiriliyor ve çalıştırılıyor..."
+    
+    # Script'i indirme
+    wget -q -O /tmp/install_wan_wrapper.sh "$WAN_WRAPPER_SCRIPT"
+    
+    # İndirme başarılı mı kontrol et
+    if [ $? -ne 0 ]; then
+        echo "❌ WanVideo Wrapper script'i indirilemedi: $WAN_WRAPPER_SCRIPT"
+        return 1
+    fi
+    
+    # Çalıştırma izinleri ver
+    chmod +x /tmp/install_wan_wrapper.sh
+    
+    # Script'i çalıştır
+    echo "🚀 WanVideo Wrapper kurulum script'i çalıştırılıyor..."
+    /tmp/install_wan_wrapper.sh
+    
+    # Çalıştırma başarılı mı kontrol et
+    if [ $? -ne 0 ]; then
+        echo "❌ WanVideo Wrapper kurulum script'i çalıştırılamadı"
+        return 1
+    fi
+    
+    echo "✅ WanVideo Wrapper kurulumu tamamlandı"
+    return 0
 }
 
 function provisioning_test_hf_token() {
